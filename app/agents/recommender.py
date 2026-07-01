@@ -1,69 +1,37 @@
-from app.memory import (
-    add_message,
-    get_profile,
-    save_profile,
-)
-
 from app.retrieval.retriever import retrieve
 from app.utils.gemini_client import ask_gemini
-from app.agents.conversation_manager import (
-    next_missing_field,
-    clarification_question,
-)
+from app.utils.intent import is_off_topic
 
 
-def chat(session_id: str, message: str):
+def extract_profile(messages):
+    """
+    Extract role, experience and additional requirements
+    from the stateless conversation history.
+    """
 
-    message = message.strip()
+    user_messages = [
+        m.content.strip()
+        for m in messages
+        if m.role.lower() == "user"
+    ]
 
-    add_message(session_id, "user", message)
+    profile = {}
 
-    profile = get_profile(session_id)
+    if len(user_messages) >= 1:
+        profile["role"] = user_messages[0]
 
-    # -----------------------------
-    # Conversation Manager
-    # -----------------------------
+    if len(user_messages) >= 2:
+        profile["experience"] = user_messages[1]
 
-    missing = next_missing_field(profile)
+    if len(user_messages) >= 3:
+        profile["extra"] = " ".join(user_messages[2:])
 
-    # First message -> save role
-    if missing == "role":
+    return profile
 
-        save_profile(session_id, "role", message)
 
-        return {
-            "reply": clarification_question("experience"),
-            "recommendations": [],
-            "end_of_conversation": False
-        }
-
-    # Second message -> save experience
-    if missing == "experience":
-
-        save_profile(session_id, "experience", message)
-
-        profile = get_profile(session_id)
-
-    # -----------------------------
-    # Build Search Query
-    # -----------------------------
-
-    query = f"""
-Role:
-{profile.get("role","")}
-
-Experience:
-{profile.get("experience","")}
-"""
-
-    # -----------------------------
-    # Retrieve Assessments
-    # -----------------------------
-
-    retrieved = retrieve(query, k=5)
+def build_context(retrieved):
 
     context = ""
-
     recommendations = []
 
     for item in retrieved:
@@ -110,19 +78,113 @@ URL:
             "categories": item["categories"]
         })
 
+    return context, recommendations
+
+
+def chat(messages):
+
     # -----------------------------
-    # Gemini
+    # Conversation History
     # -----------------------------
+
+    conversation = "\n".join(
+        f"{m.role}: {m.content}"
+        for m in messages
+    )
+
+    last_user_message = ""
+
+    for m in reversed(messages):
+        if m.role.lower() == "user":
+            last_user_message = m.content.strip()
+            break
+
+# -----------------------------
+# Off-topic Detection
+# -----------------------------
+
+    if is_off_topic(last_user_message):
+        return {
+        "reply": "I can only help with SHL assessment recommendations. Please ask about hiring roles, assessments, or comparing SHL assessments.",
+        "recommendations": [],
+        "end_of_conversation": True
+    }
+    # -----------------------------
+    # Comparison Intent
+    # -----------------------------
+
+    comparison_keywords = [
+        "compare",
+        "difference",
+        "vs",
+        "versus"
+    ]
+
+    if any(k in last_user_message.lower() for k in comparison_keywords):
+
+        retrieved = retrieve(last_user_message, k=2)
+
+        context, recommendations = build_context(retrieved)
+
+        reply = ask_gemini(
+            context=context,
+            conversation=conversation
+        )
+
+        return {
+            "reply": reply,
+            "recommendations": recommendations,
+            "end_of_conversation": True
+        }
+
+    # -----------------------------
+    # Build Profile
+    # -----------------------------
+
+    profile = extract_profile(messages)
+
+    if "role" not in profile:
+
+        return {
+            "reply": "What role are you hiring for?",
+            "recommendations": [],
+            "end_of_conversation": False
+        }
+
+    if "experience" not in profile:
+
+        return {
+            "reply": "What experience level are you hiring for? (Entry-Level, Mid-Professional, Senior Leadership)",
+            "recommendations": [],
+            "end_of_conversation": False
+        }
+
+    # -----------------------------
+    # Retrieval Query
+    # -----------------------------
+
+    query = f"""
+Role:
+{profile['role']}
+
+Experience:
+{profile['experience']}
+
+Additional Requirements:
+{profile.get("extra","")}
+"""
+
+    retrieved = retrieve(query, k=5)
+
+    context, recommendations = build_context(retrieved)
 
     reply = ask_gemini(
         context=context,
-        question=query
+        conversation=conversation
     )
-
-    add_message(session_id, "assistant", reply)
 
     return {
         "reply": reply,
         "recommendations": recommendations,
-        "end_of_conversation": False
+        "end_of_conversation": True
     }

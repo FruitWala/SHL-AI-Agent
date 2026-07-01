@@ -1,14 +1,19 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
+from typing import List
 
 from app.agents.recommender import chat
 
 router = APIRouter()
 
 
+class Message(BaseModel):
+    role: str
+    content: str
+
+
 class ChatRequest(BaseModel):
-    session_id: str
-    message: str
+    messages: List[Message]
 
 
 @router.get("/health")
@@ -21,7 +26,4 @@ def health():
 @router.post("/chat")
 def chat_api(request: ChatRequest):
 
-    return chat(
-        session_id=request.session_id,
-        message=request.message
-    )
+    return chat(request.messages)
