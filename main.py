@@ -6,4 +6,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
+@app.get("/")
+def root():
+    return {
+        "message": "SHL AI Assessment Recommendation Agent",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
 app.include_router(router)
